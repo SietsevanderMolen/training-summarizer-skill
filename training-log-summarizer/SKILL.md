@@ -1,6 +1,6 @@
 ---
 name: training-log-summarizer
-description: summarize parsed running and cycling workout memories into weekly and rolling training summaries for downstream coaching. use when asked to aggregate recent exercise history, create weekly run/bike summaries, produce 4/8/12-week training rollups, detect basic training-pattern flags, or prepare compact coach-readable training state from daily workout memories.
+description: summarize parsed running and cycling workout memories into weekly and rolling training summaries for downstream coaching. use when asked to aggregate recent exercise history, create weekly run/bike summaries, produce 4/8/12-week training rollups, detect basic training-pattern flags, prepare compact coach-readable training state from daily workout memories, or summarize openclaw compact workout blocks marked with OPENCLAW_FIT_WORKOUT_START and OPENCLAW_FIT_WORKOUT_END.
 ---
 
 # Training Log Summarizer
@@ -28,7 +28,60 @@ This skill records what happened and highlights training patterns. It does not p
 
 Input is already-parsed daily activity memory records. Schema may vary by source.
 
-Typical shape:
+### Preferred OpenClaw Compact Workout Blocks
+
+The current preferred input format is generated inside removable marker blocks in daily memory files:
+
+```text
+<!-- OPENCLAW_FIT_WORKOUT_START source_file="..." -->
+...
+<!-- OPENCLAW_FIT_WORKOUT_END source_file="..." -->
+```
+
+During normal weekly and rolling summarization:
+
+- Read only content inside `OPENCLAW_FIT_WORKOUT_START` / `OPENCLAW_FIT_WORKOUT_END` blocks.
+- Use the `Compact Workout Facts` YAML block as the primary source of truth.
+- Use the `Heart Rate Zones` section only as a fallback or human-readable check.
+- Do not open `workout_detail_ref` JSON files unless a specific workout is being debugged or required fields are missing.
+- Ignore prior summary files, coach state files, Telegram logs, and files in `/workout_details/`.
+
+Expected compact shape:
+
+```yaml
+memory_type: daily_workout
+source: fit-parser
+source_file: 2026-03-02_22-04-00_zw_2085213439378079792.fit
+detail_file: /home/user/.openclaw/workspace/workout_details/2026-03-02_22-04-00_zw_2085213439378079792.json
+date: 2026-03-02
+start_time: 2026-03-02T21:04:00+00:00
+sport: cycling
+sub_sport: virtual_activity
+duration_minutes: 60.85
+distance_km: 25.1
+avg_hr_bpm: 133
+max_hr_bpm: 144
+avg_power_w: 103
+max_power_w: 243
+avg_cadence_rpm: 74
+max_cadence_rpm: 86
+elevation_gain_m: 130
+elevation_loss_m: 124
+calories_kcal: 361
+intensity_estimate: easy
+hard_session: false
+training_load_points: 61
+hr_zones:
+  z1:
+    range: "55-65%"
+    seconds: 492
+    time: "8:12"
+    percent: 19.5
+```
+
+### Legacy Parsed Daily Activity Records
+
+Older daily memories may use a generic activity-list shape:
 
 ```yaml
 date: 2026-05-14
@@ -49,14 +102,57 @@ Treat missing fields as unknown. Do not invent values.
 
 ## Workflow
 
-1. Read relevant daily activity memories for the requested period.
-2. Normalize activities into categories: `run`, `bike`, `strength`, `walk`, `other`.
-3. Build weekly aggregation (ISO week: Monday-Sunday).
-4. Build rolling summaries when requested (4/8/12 weeks = 28/56/84 days).
-5. Classify intensity conservatively and track confidence.
-6. Detect factual flags from available data.
-7. Output structured YAML or Markdown with explicit date boundaries.
-8. Preserve uncertainty, missing-data notes, and confidence.
+1. Read relevant daily memory files for the requested period.
+2. Extract only generated workout blocks between `OPENCLAW_FIT_WORKOUT_START` and `OPENCLAW_FIT_WORKOUT_END`.
+3. Parse each block's `Compact Workout Facts` YAML as the primary source.
+4. Normalize activities into categories: `run`, `bike`, `strength`, `walk`, `other`.
+5. Build weekly aggregation (ISO week: Monday-Sunday).
+6. Build rolling summaries when requested (4/8/12 weeks = 28/56/84 days).
+7. Use `training_load_points` for normalized load aggregation when present; also keep duration-minute totals.
+8. Classify intensity conservatively from `intensity_estimate`, `hard_session`, and `hr_zones`.
+9. Detect factual flags from available data.
+10. Output structured YAML or Markdown with explicit date boundaries.
+11. Preserve uncertainty, missing-data notes, and confidence.
+
+## Source Selection and Exclusions
+
+For normal scheduled summaries, never scan the entire memory directory as undifferentiated text. Select only date-based daily memory files in the requested period, then extract marked workout blocks from those files.
+
+Exclude these inputs unless explicitly requested:
+
+- `training_summary_*.md`
+- `coach_state*.md`
+- Telegram or notification logs
+- files outside the requested date range
+- `/home/user/.openclaw/workspace/workout_details/*.json`
+
+The `/workout_details/` archive contains high-resolution parser JSON and may be large. Open those files only for specific workout debugging, missing required compact fields, or explicit user requests.
+
+
+## Training Load Aggregation
+
+When `training_load_points` is available in compact workout facts, aggregate it for weekly and rolling summaries.
+
+Include both:
+
+- duration-based totals, such as `total_duration_minutes`
+- normalized load totals, such as `total_load_points`
+
+For rolling summaries, include coach-readable load inputs:
+
+```yaml
+coach_state_inputs:
+  recent_load_7d_points: null
+  recent_load_28d_points: null
+  recent_load_56d_points: null
+  recent_load_84d_points: null
+  recent_load_7d_minutes: null
+  recent_load_28d_minutes: null
+  hard_sessions_last_7d: null
+  hard_sessions_last_28d: null
+```
+
+If load points are missing, keep `*_load_points` fields as `null`, aggregate minutes normally, and add `training_load_points` to `data_quality.missing_fields`.
 
 ## Normalization Rules
 
@@ -70,12 +166,14 @@ Treat missing fields as unknown. Do not invent values.
 
 Use signals in this priority order:
 
-1. Explicit workout label
-2. Power zones (cycling)
-3. Heart-rate zones
-4. Pace/speed vs known baseline
-5. Perceived effort or notes
-6. Fallback: `unknown`
+1. `intensity_estimate` from `Compact Workout Facts`, if present
+2. `hard_session` from `Compact Workout Facts`, if present
+3. Explicit workout label/title
+4. Power zones (cycling)
+5. Heart-rate zones from `hr_zones`
+6. Pace/speed vs known baseline
+7. Perceived effort or notes
+8. Fallback: `unknown`
 
 Allowed labels:
 
@@ -130,6 +228,7 @@ bike:
 combined:
   total_sessions: 0
   total_duration_minutes: 0
+  total_load_points: null
   active_days: 0
   rest_days: 7
   hard_days: 0
@@ -170,6 +269,10 @@ trend:
   consistency: medium
 flags: []
 coach_state_inputs:
+  recent_load_7d_points: null
+  recent_load_28d_points: null
+  recent_load_56d_points: null
+  recent_load_84d_points: null
   recent_load_7d_minutes: null
   recent_load_28d_minutes: null
   hard_sessions_last_7d: null

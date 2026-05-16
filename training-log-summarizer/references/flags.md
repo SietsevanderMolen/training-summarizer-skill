@@ -29,3 +29,21 @@ Flags are factual observations, not recommendations.
 - Prefer direct calculations from available records.
 - If insufficient data exists for a flag, do not force it; note uncertainty instead.
 - Always keep period boundaries explicit.
+
+
+## Compact Block Guidance
+
+When evaluating flags from OpenClaw daily memory, use only generated workout blocks delimited by:
+
+```text
+<!-- OPENCLAW_FIT_WORKOUT_START
+<!-- OPENCLAW_FIT_WORKOUT_END
+```
+
+Use `Compact Workout Facts` YAML as the primary source. In particular:
+
+- Use `hard_session` for hard-session counts when present.
+- Use `training_load_points` for sudden load/duration spike context when present.
+- Use `date`, `duration_minutes`, `distance_km`, and `sport` for volume and consistency flags.
+- Use `hr_zones` for intensity context.
+- Do not open `workout_detail_ref` files during routine flag detection.
